@@ -10,8 +10,7 @@ static char const wow[]{ "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQR
 void ShowInput(bool enable)
 {
     //Get the current console mode
-    DWORD  mode;
-    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode; HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
     GetConsoleMode(hStdin, &mode);
 
     //Set/Clear the echo bit
