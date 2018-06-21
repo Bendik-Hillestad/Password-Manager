@@ -19,22 +19,25 @@
 //4 byte CRC32
 
 #include <cstdint>
+#include <cstddef>
 
 namespace pm
 {
-    struct archive
-    {
-        uint32_t entry_count;
-        entry* entries;
-    };
-
     struct entry
     {
         char const* identifier;
         char const* password;
     };
 
-    archive read_archive(void* data) noexcept;
+    struct archive
+    {
+        uint32_t entry_count;
+        entry* entries;
+    };
+
+    archive read_archive(void* data, std::size_t len) noexcept;
+    void test();
+    void test2();
 };
 
 #endif

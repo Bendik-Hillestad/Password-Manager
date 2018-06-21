@@ -1,5 +1,6 @@
 #include "to_base.h"
 #include "crypto.h"
+#include "archive.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -36,12 +37,14 @@ void main()
     char* buf2 = nullptr;
     std::size_t buf2_len = 0;
 
-    bool success = pm::encrypt(password, static_cast<void const*>(&wow[0]), sizeof(wow), reinterpret_cast<void**>(&buf), &buf_len);
+    pm::test();
+    pm::test2();
+    /*bool success = pm::encrypt(password, static_cast<void const*>(&wow[0]), sizeof(wow), reinterpret_cast<void**>(&buf), &buf_len);
     success = pm::decrypt(password, buf, buf_len, reinterpret_cast<void**>(&buf2), &buf2_len);
     for (int i = 0; i < 10; i++)
     {
         std::size_t rand;
         pm::get_random_bytes(&rand, sizeof(rand));
         std::cout << pm::to_base(rand, wow) << std::endl;
-    }
+    }*/
 }
