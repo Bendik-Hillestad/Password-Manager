@@ -5,6 +5,7 @@
 
 using std::uint8_t;
 using std::uint32_t;
+using std::uint64_t;
 
 #pragma pack(push, 1)
 struct bhpm_header
@@ -14,10 +15,12 @@ struct bhpm_header
     uint8_t  pad1;
     uint8_t  minor_version;
     uint8_t  pad2;
+    uint64_t iv[2];
 };
 
 struct bhpm_entries_header
 {
+    uint64_t hash[4];
     uint32_t entry_count;
     uint32_t entry_size;
 };
@@ -29,11 +32,6 @@ struct bhpm_entry_header
 };
 
 struct bhpm_entry_footer
-{
-    uint32_t crc32;
-};
-
-struct bhpm_footer
 {
     uint32_t crc32;
 };
@@ -98,14 +96,14 @@ pm::archive pm::read_archive(void* data, std::size_t len) noexcept
     //Decrypt the encrypted block
     void* unencrypted_data = nullptr;
     auto  unencrypted_len  = std::size_t{0};
-    bool  success = pm::decrypt("1234", data, len, &unencrypted_data, &unencrypted_len);
+    bool  success = pm::decrypt("1234", header.iv, data, len, &unencrypted_data, &unencrypted_len);
     if (!success) return {};
 
     //Read the entries header
     auto entries_header = consume<bhpm_entries_header>(&unencrypted_data, &unencrypted_len);
 
-    //Verify that the remaining size is the entries + footer
-    if (unencrypted_len != (entries_header.entry_size + sizeof(bhpm_footer))) return {};
+    //Verify that the remaining size is the entries
+    if (unencrypted_len != entries_header.entry_size) return {};
 
     //Read all the entries
     archive result{ entries_header.entry_count, new entry[entries_header.entry_count] };
@@ -125,8 +123,8 @@ pm::archive pm::read_archive(void* data, std::size_t len) noexcept
         auto entry_footer = consume<bhpm_entry_footer>(&unencrypted_data, &unencrypted_len);
     }
 
-    //Read the main footer
-    auto main_footer = consume<bhpm_footer>(&unencrypted_data, &unencrypted_len);
+    //Make sure we read everything
+    if (unencrypted_len != 0) return {};
 
     //Return the result
     return(result);
@@ -136,7 +134,12 @@ pm::archive pm::read_archive(void* data, std::size_t len) noexcept
 #include <fstream>
 #include <limits>
 
-static uint8_t arr[]{ 0x01,0x00,0x00,0x00,0x0C,0x00,0x00,0x00,0x03,0x03,0x41,0x42,0x43,0x44,0x43,0x45,0xd2,0x04,0x00,0x00,0xd2,0x04,0x00,0x00 };
+static uint8_t arr[]
+{ 
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+    0x01,0x00,0x00,0x00,0x0C,0x00,0x00,0x00,0x03,0x03,0x41,0x42,0x43,0x44,0x43,0x45,0xd2,0x04,0x00,0x00
+};
 
 void pm::test()
 {
@@ -149,9 +152,13 @@ void pm::test()
     test << (uint8_t)0;
     test << (uint8_t)0;
 
+    char iv[16];
+    pm::get_random_bytes(iv, 16);
+    test.write(iv, 16);
+
     void* data = nullptr;
     auto datalen = std::size_t{ 0 };
-    pm::encrypt("1234", arr, sizeof(arr), &data, &datalen);
+    pm::encrypt("1234", iv, arr, sizeof(arr), &data, &datalen);
     test.write(static_cast<char const*>(data), datalen);
 
     test.flush();

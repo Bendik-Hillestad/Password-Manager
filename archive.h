@@ -7,7 +7,9 @@
 //1 byte zeroes
 //1 byte minor version
 //1 byte zeroes
+//16 bytes initialization vector
 //After this encrypted
+//32 bytes SHA256 hash of the encrypted block
 //4 bytes entry_count
 //4 bytes entry_size
 //entries[entry_count]
@@ -16,7 +18,6 @@
 //    char[id_len] id
 //    char[pass_len] pass
 //    4 byte CRC32
-//4 byte CRC32
 
 #include <cstdint>
 #include <cstddef>
@@ -31,8 +32,8 @@ namespace pm
 
     struct archive
     {
-        uint32_t entry_count;
-        entry* entries;
+        std::uint32_t entry_count;
+        entry*        entries;
     };
 
     archive read_archive(void* data, std::size_t len) noexcept;

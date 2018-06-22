@@ -27,7 +27,7 @@ bool pm::get_random_bytes(void* buffer, std::size_t len)
     return(success);
 }
 
-bool pm::encrypt(std::string_view password, void const* input, std::size_t input_len, void** output, std::size_t* output_len)
+bool pm::encrypt(std::string_view password, void const* iv, void const* input, std::size_t input_len, void** output, std::size_t* output_len)
 {
     HCRYPTPROV hProv;
     HCRYPTHASH hHash;
@@ -62,6 +62,17 @@ bool pm::encrypt(std::string_view password, void const* input, std::size_t input
     if (!success)
     {
         //Release resources and exit
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return(success);
+    }
+
+    //Set IV
+    success = CryptSetKeyParam(hKey, KP_IV, static_cast<BYTE const*>(iv), 0);
+    if (!success)
+    {
+        //Release resources and exit
+        CryptDestroyKey(hKey);
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return(success);
@@ -116,7 +127,7 @@ bool pm::encrypt(std::string_view password, void const* input, std::size_t input
     return(success);
 }
 
-bool pm::decrypt(std::string_view password, void const* input, std::size_t input_len, void** output, std::size_t* output_len)
+bool pm::decrypt(std::string_view password, void const* iv, void const* input, std::size_t input_len, void** output, std::size_t* output_len)
 {
     HCRYPTPROV hProv;
     HCRYPTHASH hHash;
@@ -151,6 +162,17 @@ bool pm::decrypt(std::string_view password, void const* input, std::size_t input
     if (!success)
     {
         //Release resources and exit
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return(success);
+    }
+
+    //Set IV
+    success = CryptSetKeyParam(hKey, KP_IV, static_cast<BYTE const*>(iv), 0);
+    if (!success)
+    {
+        //Release resources and exit
+        CryptDestroyKey(hKey);
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
         return(success);

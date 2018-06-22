@@ -24,7 +24,7 @@ void ShowInput(bool enable)
 
 void main()
 {
-    std::cout << "Enter password: ";
+    /*std::cout << "Enter password: ";
     ShowInput(false);
     std::string password;
     std::cin >> password;
@@ -35,7 +35,7 @@ void main()
     char* buf = nullptr;
     std::size_t buf_len = 0;
     char* buf2 = nullptr;
-    std::size_t buf2_len = 0;
+    std::size_t buf2_len = 0;*/
 
     pm::test();
     pm::test2();
