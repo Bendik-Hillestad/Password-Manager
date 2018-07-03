@@ -1,228 +1,396 @@
 #include "crypto.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-#include <wincrypt.h>
+#include <bcrypt.h>
 
-#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
-bool pm::get_random_bytes(void* buffer, std::size_t len)
+bool pm::get_random_bytes(std::uint8_t* buffer, std::size_t len) noexcept
 {
-    HCRYPTPROV hProv;
+    NTSTATUS          success = static_cast<NTSTATUS>(0xC0000001L);
+    BCRYPT_ALG_HANDLE hRngAlg = nullptr;
 
-    //Attempt to acquire a context
-    auto success = CryptAcquireContext(&hProv, nullptr, MS_DEF_PROV, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT);
-    if (!success) return false;
+    //Open algorithm provider
+    success = BCryptOpenAlgorithmProvider(&hRngAlg, BCRYPT_RNG_ALGORITHM, nullptr, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
 
-    //Generate bytes
-    success = CryptGenRandom(hProv, static_cast<DWORD>(len), static_cast<BYTE*>(buffer));
-    
-    //Release the context and exit
-    CryptReleaseContext(hProv, 0);
-    return(success);
+    //Generate random bytes
+    success = BCryptGenRandom(hRngAlg, static_cast<PUCHAR>(buffer), static_cast<ULONG>(len), 0);
+
+cleanup:
+    //Close algorithm provider
+    if (hRngAlg)
+        BCryptCloseAlgorithmProvider(hRngAlg, 0);
+
+    //Return the status
+    return(success >= 0);
 }
 
-bool pm::encrypt(std::string_view password, void const* iv, void const* input, std::size_t input_len, void** output, std::size_t* output_len)
+bool pm::hash(pm::span<std::uint8_t> data, std::uint8_t** result) noexcept
 {
-    HCRYPTPROV hProv;
-    HCRYPTHASH hHash;
-    HCRYPTKEY  hKey;
+    NTSTATUS           success      = static_cast<NTSTATUS>(0xC0000001L);
+    BCRYPT_ALG_HANDLE  hShaAlg      = nullptr;
+    BCRYPT_HASH_HANDLE hHash        = nullptr;
+    DWORD              cbData       = 0;
+    DWORD              cbHashObject = 0;
+    DWORD              cbHash       = 0;
+    PBYTE              pbHashObject = nullptr;
+    PBYTE              pbHash       = nullptr;
 
-    //Attempt to acquire a context
-    auto success = CryptAcquireContext(&hProv, nullptr, MS_ENH_RSA_AES_PROV, PROV_RSA_AES, CRYPT_VERIFYCONTEXT | CRYPT_SILENT);
-    if (!success) return false;
-
-    //Prepare to hash the password using SHA-256
-    success = CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash);
-    if (!success)
+    //Open algorithm provider
+    success = BCryptOpenAlgorithmProvider(&hShaAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+    if (success < 0)
     {
-        //Release resources and exit
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Hash the password
-    auto pass_data = static_cast<void const*>(password.data());
-    success = CryptHashData(hHash, static_cast<BYTE const*>(pass_data), static_cast<DWORD>(password.length()), 0);
-    if (!success)
+    //Find how much space the hash object needs
+    success = BCryptGetProperty(hShaAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PBYTE>(&cbHashObject), sizeof(DWORD), &cbData, 0);
+    if (success < 0)
     {
-        //Release resources and exit
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Derive a key for AES-128
-    success = CryptDeriveKey(hProv, CALG_AES_128, hHash, 0, &hKey);
-    if (!success)
+    //Allocate space for the hash object
+    pbHashObject = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbHashObject));
+    if (pbHashObject == nullptr)
     {
-        //Release resources and exit
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Set IV
-    success = CryptSetKeyParam(hKey, KP_IV, static_cast<BYTE const*>(iv), 0);
-    if (!success)
+    //Find how much space the hash result needs
+    success = BCryptGetProperty(hShaAlg, BCRYPT_HASH_LENGTH, reinterpret_cast<PBYTE>(&cbHash), sizeof(DWORD), &cbData, 0);
+    if (success < 0)
     {
-        //Release resources and exit
-        CryptDestroyKey(hKey);
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Setup block
-    constexpr auto block_len = 128u;
-    BYTE block[block_len]{};
-
-    //Prepare output
-    std::vector<BYTE> output_vector{};
-
-    //Iterate over input data
-    for (int i = 0; i < input_len; i += block_len)
+    //Allocate space for the hash result
+    pbHash = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbHash));
+    if (pbHash == nullptr)
     {
-        //Copy data into the block
-        auto data_len = static_cast<DWORD>(std::min<std::size_t>(block_len, input_len - i));
-        std::memcpy(block, input, data_len);
-
-        //Check if this is the final block
-        bool is_final = ((input_len - i) <= block_len);
-
-        //Encrypt the block
-        success = CryptEncrypt(hKey, NULL, is_final, 0, block, &data_len, block_len);
-        if (!success)
-        {
-            //Release resources and exit
-            CryptDestroyKey(hKey);
-            CryptDestroyHash(hHash);
-            CryptReleaseContext(hProv, 0);
-            return(success);
-        }
-
-        //Copy the data out
-        std::copy(&block[0], &block[data_len], std::back_inserter(output_vector));
-
-        //Clear the block
-        std::memset(block, 0, block_len);
+        //Go to cleanup
+        goto cleanup;
     }
-    
-    //Generate a buffer for the final output
-    *output_len = output_vector.size();
-    *output     = new BYTE[*output_len];
-    
-    //Copy the data from the vector into our new buffer
-    std::memcpy(*output, output_vector.data(), *output_len);
 
-    //Release resources and exit
-    CryptDestroyKey(hKey);
-    CryptDestroyHash(hHash);
-    CryptReleaseContext(hProv, 0);
-    return(success);
+    //Prepare to hash the data
+    success = BCryptCreateHash(hShaAlg, &hHash, pbHashObject, cbHashObject, nullptr, 0, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Hash the data
+    success = BCryptHashData(hHash, static_cast<PUCHAR>(const_cast<std::uint8_t*>(data.data())), static_cast<ULONG>(data.size()), 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Finish the hash
+    success = BCryptFinishHash(hHash, pbHash, cbHash, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Assign the result
+    *result = pbHash;
+
+cleanup:
+    //Close algorithm provider
+    if (hShaAlg)
+        BCryptCloseAlgorithmProvider(hShaAlg, 0);
+
+    //Destroy the hash
+    if (hHash)
+        BCryptDestroyHash(hHash);
+
+    //Release the memory for the hash object
+    if (pbHashObject)
+        HeapFree(GetProcessHeap(), 0, pbHashObject);
+
+    //If we failed, release the memory for the result
+    if (pbHash && success < 0)
+        HeapFree(GetProcessHeap(), 0, pbHash);
+
+    //Return the status
+    return(success >= 0);
 }
 
-bool pm::decrypt(std::string_view password, void const* iv, void const* input, std::size_t input_len, void** output, std::size_t* output_len)
+bool pm::encrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, std::uint8_t** output, std::size_t* output_len) noexcept
 {
-    HCRYPTPROV hProv;
-    HCRYPTHASH hHash;
-    HCRYPTKEY  hKey;
+    NTSTATUS           success      = static_cast<NTSTATUS>(0xC0000001L);
+    BCRYPT_ALG_HANDLE  hAesAlg      = nullptr;
+    BCRYPT_KEY_HANDLE  hKey         = nullptr;
+    DWORD              cbData       = 0;
+    DWORD              cbKeyObject  = 0;
+    DWORD              cbHash       = 32;
+    DWORD              cbIV         = 16;
+    DWORD              cbCipherText = 0;
+    PBYTE              pbKeyObject  = nullptr;
+    PBYTE              pbHash       = nullptr;
+    PBYTE              pbIV         = nullptr;
+    PBYTE              pbCipherText = nullptr;
 
-    //Attempt to acquire a context
-    auto success = CryptAcquireContext(&hProv, nullptr, MS_ENH_RSA_AES_PROV, PROV_RSA_AES, CRYPT_VERIFYCONTEXT | CRYPT_SILENT);
-    if (!success) return false;
-
-    //Prepare to hash the password using SHA-256
-    success = CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash);
-    if (!success)
+    //Open algorithm provider
+    success = BCryptOpenAlgorithmProvider(&hAesAlg, BCRYPT_AES_ALGORITHM, nullptr, 0);
+    if (success < 0)
     {
-        //Release resources and exit
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Hash the password
-    auto pass_data = static_cast<void const*>(password.data());
-    success = CryptHashData(hHash, static_cast<BYTE const*>(pass_data), static_cast<DWORD>(password.length()), 0);
-    if (!success)
+    //Find how much space the key object needs
+    success = BCryptGetProperty(hAesAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PBYTE>(&cbKeyObject), sizeof(DWORD), &cbData, 0);
+    if (success < 0)
     {
-        //Release resources and exit
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Derive a key for AES-128
-    success = CryptDeriveKey(hProv, CALG_AES_128, hHash, 0, &hKey);
-    if (!success)
+    //Allocate space for the key object
+    pbKeyObject = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbKeyObject));
+    if (pbKeyObject == nullptr)
     {
-        //Release resources and exit
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Set IV
-    success = CryptSetKeyParam(hKey, KP_IV, static_cast<BYTE const*>(iv), 0);
-    if (!success)
+    //Check that the provided IV is long enough
+    if (iv.size() < cbIV)
     {
-        //Release resources and exit
-        CryptDestroyKey(hKey);
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return(success);
+        //Go to cleanup
+        goto cleanup;
     }
 
-    //Setup block
-    constexpr auto block_len = 128u;
-    BYTE block[block_len]{};
-
-    //Prepare output
-    std::vector<BYTE> output_vector{};
-
-    //Iterate over input data
-    for (int i = 0; i < input_len; i += block_len)
+    //Allocate space for the IV
+    pbIV = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbIV));
+    if (pbIV == nullptr)
     {
-        //Copy data into the block
-        auto data_len = static_cast<DWORD>(std::min<std::size_t>(block_len, input_len - i));
-        std::memcpy(block, input, data_len);
-
-        //Check if this is the final block
-        bool is_final = ((input_len - i) <= block_len);
-
-        //Decrypt the block
-        success = CryptDecrypt(hKey, NULL, is_final, 0, block, &data_len);
-        if (!success)
-        {
-            //Release resources and exit
-            CryptDestroyKey(hKey);
-            CryptDestroyHash(hHash);
-            CryptReleaseContext(hProv, 0);
-            return(success);
-        }
-
-        //Copy the data out
-        std::copy(&block[0], &block[data_len], std::back_inserter(output_vector));
-
-        //Clear the block
-        std::memset(block, 0, block_len);
+        //Go to cleanup
+        goto cleanup;
     }
-    
-    //Generate a buffer for the final output
-    *output_len = output_vector.size();
-    *output     = new BYTE[*output_len];
-    
-    //Copy the data from the vector into our new buffer
-    std::memcpy(*output, output_vector.data(), *output_len);
 
-    //Release resources and exit
-    CryptDestroyKey(hKey);
-    CryptDestroyHash(hHash);
-    CryptReleaseContext(hProv, 0);
-    return(success);
+    //Copy the provided IV into our new buffer
+    std::memcpy(pbIV, iv.data(), cbIV);
+
+    //Hash the input password
+    success = pm::hash(password, &pbHash);
+    if (success == 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Generate the key object
+    success = BCryptGenerateSymmetricKey(hAesAlg, &hKey, pbKeyObject, cbKeyObject, pbHash, cbHash, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Calculate the length of the cipher text
+    success = BCryptEncrypt(hKey, const_cast<PUCHAR>(input.data()), static_cast<ULONG>(input.size()), nullptr, pbIV, cbIV, nullptr, 0, &cbCipherText, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Allocate space for the cipher text
+    pbCipherText = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbCipherText));
+    if (pbCipherText == nullptr)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Encrypt the input
+    success = BCryptEncrypt(hKey, const_cast<PUCHAR>(input.data()), static_cast<ULONG>(input.size()), nullptr, pbIV, cbIV, pbCipherText, cbCipherText, &cbData, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Assign the result
+    *output     = pbCipherText;
+    *output_len = cbCipherText;
+
+cleanup:
+    //Close algorithm provider
+    if (hAesAlg)
+        BCryptCloseAlgorithmProvider(hAesAlg, 0);
+
+    //Destroy the key
+    if (hKey)
+        BCryptDestroyKey(hKey);
+
+    //Release the memory for the key object
+    if (pbKeyObject)
+        HeapFree(GetProcessHeap(), 0, pbKeyObject);
+
+    //Release the memory for the hash
+    if (pbHash)
+        HeapFree(GetProcessHeap(), 0, pbHash);
+
+    //Release the memory for the IV
+    if (pbIV)
+        HeapFree(GetProcessHeap(), 0, pbIV);
+
+    //If we failed, release the memory for the result
+    if (pbCipherText)
+        HeapFree(GetProcessHeap(), 0, pbCipherText);
+
+    //Return the status
+    return(success >= 0);
+}
+
+bool pm::decrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, std::uint8_t** output, std::size_t* output_len) noexcept
+{
+    NTSTATUS           success      = static_cast<NTSTATUS>(0xC0000001L);
+    BCRYPT_ALG_HANDLE  hAesAlg      = nullptr;
+    BCRYPT_KEY_HANDLE  hKey         = nullptr;
+    DWORD              cbData       = 0;
+    DWORD              cbKeyObject  = 0;
+    DWORD              cbHash       = 32;
+    DWORD              cbIV         = 16;
+    DWORD              cbClearText  = 0;
+    PBYTE              pbKeyObject  = nullptr;
+    PBYTE              pbHash       = nullptr;
+    PBYTE              pbIV         = nullptr;
+    PBYTE              pbClearText  = nullptr;
+
+    //Open algorithm provider
+    success = BCryptOpenAlgorithmProvider(&hAesAlg, BCRYPT_AES_ALGORITHM, nullptr, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Find how much space the key object needs
+    success = BCryptGetProperty(hAesAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PBYTE>(&cbKeyObject), sizeof(DWORD), &cbData, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Allocate space for the key object
+    pbKeyObject = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbKeyObject));
+    if (pbKeyObject == nullptr)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Check that the provided IV is long enough
+    if (iv.size() < cbIV)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Allocate space for the IV
+    pbIV = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbIV));
+    if (pbIV == nullptr)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Copy the provided IV into our new buffer
+    std::memcpy(pbIV, iv.data(), cbIV);
+
+    //Hash the input password
+    success = pm::hash(password, &pbHash);
+    if (success == 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Generate the key object
+    success = BCryptGenerateSymmetricKey(hAesAlg, &hKey, pbKeyObject, cbKeyObject, pbHash, cbHash, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Calculate the length of the clear text
+    success = BCryptDecrypt(hKey, const_cast<PUCHAR>(input.data()), static_cast<ULONG>(input.size()), nullptr, pbIV, cbIV, nullptr, 0, &cbClearText, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Allocate space for the clear text
+    pbClearText = static_cast<PBYTE>(HeapAlloc(GetProcessHeap(), 0, cbClearText));
+    if (pbClearText == nullptr)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Decrypt the input
+    success = BCryptDecrypt(hKey, const_cast<PUCHAR>(input.data()), static_cast<ULONG>(input.size()), nullptr, pbIV, cbIV, pbClearText, cbClearText, &cbData, 0);
+    if (success < 0)
+    {
+        //Go to cleanup
+        goto cleanup;
+    }
+
+    //Assign the result
+    *output     = pbClearText;
+    *output_len = cbClearText;
+
+cleanup:
+    //Close algorithm provider
+    if (hAesAlg)
+        BCryptCloseAlgorithmProvider(hAesAlg, 0);
+
+    //Destroy the key
+    if (hKey)
+        BCryptDestroyKey(hKey);
+
+    //Release the memory for the key object
+    if (pbKeyObject)
+        HeapFree(GetProcessHeap(), 0, pbKeyObject);
+
+    //Release the memory for the hash
+    if (pbHash)
+        HeapFree(GetProcessHeap(), 0, pbHash);
+
+    //Release the memory for the IV
+    if (pbIV)
+        HeapFree(GetProcessHeap(), 0, pbIV);
+
+    //If we failed, release the memory for the result
+    if (pbClearText)
+        HeapFree(GetProcessHeap(), 0, pbClearText);
+
+    //Return the status
+    return(success >= 0);
 }

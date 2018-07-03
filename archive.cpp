@@ -1,6 +1,8 @@
 #include "archive.h"
 #include "crypto.h"
+#include "xorshift.h"
 
+#include <cstdint>
 #include <cstring>
 
 using std::uint8_t;
@@ -18,54 +20,72 @@ struct bhpm_header
     uint64_t iv[2];
 };
 
-struct bhpm_entries_header
+struct bhpm_data_hash
 {
     uint64_t hash[4];
-    uint32_t entry_count;
-    uint32_t entry_size;
 };
 
 struct bhpm_entry_header
 {
-    uint8_t id_len;
-    uint8_t pass_len;
+    uint16_t id_len   : 6;
+    uint16_t pass_len : 6;
+    uint16_t garbage  : 4;
 };
 
-struct bhpm_entry_footer
+struct bhpm_xorshift_seed
 {
-    uint32_t crc32;
+    uint64_t seed[2];
 };
 #pragma pack(pop)
 
 template<typename T>
-static T consume(void** ptr, std::size_t* len)
+static T consume(pm::span<uint8_t>* data)
 {
     //Read the value
-    auto result = *static_cast<T*>(*ptr);
+    auto result = *reinterpret_cast<T const*>(data->data());
 
-    //Adjust the pointer and length
-    *ptr = static_cast<void*>(static_cast<char*>(*ptr) + sizeof(T));
-    *len = *len - sizeof(T);
+    //Adjust the span
+    *data = data->slice(sizeof(T));
 
     //Return the result
     return(result);
 }
 
 template<typename T>
-static T* consume_array(void** ptr, std::size_t* len, std::size_t count)
+static T* consume_array(pm::span<uint8_t>* data, std::size_t count)
 {
     //Allocate memory
     auto* result = new T[count];
 
     //Copy data into the allocated block
-    std::memcpy(result, *ptr, sizeof(T) * count);
+    std::memcpy(result, data->data(), sizeof(T) * count);
 
-    //Adjust the pointer and length
-    *ptr = static_cast<void*>(static_cast<char*>(*ptr) + sizeof(T) * count);
-    *len = *len - sizeof(T) * count;
+    //Adjust the span
+    *data = data->slice(sizeof(T) * count);
 
     //Return the result
     return(result);
+}
+
+static pm::span<uint8_t> xorshift_data(pm::span<uint8_t> input, pm::xorshift_state xs) noexcept
+{
+    //Make a copy of the data
+    auto* copy = new uint8_t[input.size()], *p = copy;
+    for (auto const &u8 : input) *p++ = u8;
+
+    //Reinterpret as an array of u64
+    auto* arr = reinterpret_cast<uint64_t*>(copy);
+    auto size = input.size() / sizeof(uint64_t);
+
+    //Iterate over the array and xor it
+    for (decltype(size) i = 0; i < size; i++)
+        arr[i] ^= xs.next();
+
+    //Reinterpret back as an array of u8
+    copy = reinterpret_cast<uint8_t*>(arr);
+
+    //Return in a span object
+    return { copy, input.size() };
 }
 
 static constexpr auto FourCC(char const(&magic)[5])
@@ -81,10 +101,12 @@ static bool check_magic(uint8_t(&magic)[4])
     return((*reinterpret_cast<uint32_t*>(magic)) == FourCC("BHPM"));
 }
 
-pm::archive pm::read_archive(void* data, std::size_t len) noexcept
+std::vector<pm::entry> pm::read_archive(span<std::uint8_t> data) noexcept
 {
+    auto password = "1234";
+
     //Read the main header
-    auto header = consume<bhpm_header>(&data, &len);
+    auto header = consume<bhpm_header>(&data);
 
     //Verify the header
     if (!check_magic(header.magic)) return {};
@@ -94,37 +116,50 @@ pm::archive pm::read_archive(void* data, std::size_t len) noexcept
     if (header.pad2 != 0)           return {};
 
     //Decrypt the encrypted block
-    void* unencrypted_data = nullptr;
+    uint8_t* unencrypted_data = nullptr;
     auto  unencrypted_len  = std::size_t{0};
-    bool  success = pm::decrypt("1234", header.iv, data, len, &unencrypted_data, &unencrypted_len);
+    auto  success = pm::decrypt(pm::span<uint8_t>{ data }, pm::span<uint8_t>{ reinterpret_cast<uint8_t*>(const_cast<char*>(password)), 4 }, span<uint8_t>{reinterpret_cast<uint8_t*>(header.iv), 16}, &unencrypted_data, &unencrypted_len);
     if (!success) return {};
 
-    //Read the entries header
-    auto entries_header = consume<bhpm_entries_header>(&unencrypted_data, &unencrypted_len);
+    //Wrap in a span
+    data = pm::span<std::uint8_t>{ static_cast<std::uint8_t*>(unencrypted_data), static_cast<std::ptrdiff_t>(unencrypted_len) };
 
-    //Verify that the remaining size is the entries
-    if (unencrypted_len != entries_header.entry_size) return {};
+    //Read the xorshift seed
+    auto seed_span = data.slice(data.size() - sizeof(bhpm_xorshift_seed));
+    auto xs_state = pm::xorshift_state{ consume<bhpm_xorshift_seed>(&seed_span).seed };
+
+    //Xorshift the data
+    data = xorshift_data(data.slice(0, 48), xs_state);
+
+    //Read the hash
+    auto hash = consume<bhpm_data_hash>(&data);
 
     //Read all the entries
-    archive result{ entries_header.entry_count, new entry[entries_header.entry_count] };
-    for (uint32_t i = 0; i < entries_header.entry_count; i++)
+    auto result = std::vector<pm::entry>{};
+    auto is_final = false;
+    while (!is_final)
     {
         //Read the entry header
-        auto entry_header = consume<bhpm_entry_header>(&unencrypted_data, &unencrypted_len);
+        auto entry_header = consume<bhpm_entry_header>(&data);
 
-        //Read the ID and password
-        result.entries[i] =
+        //Set the final flag
+        is_final = (entry_header.id_len == 0) && (entry_header.pass_len == 0);
+
+        //Check that we're not done
+        if (!is_final)
         {
-            consume_array<char>(&unencrypted_data, &unencrypted_len, entry_header.id_len),
-            consume_array<char>(&unencrypted_data, &unencrypted_len, entry_header.pass_len)
-        };
-        
-        //Read the entry footer
-        auto entry_footer = consume<bhpm_entry_footer>(&unencrypted_data, &unencrypted_len);
-    }
+            //Read the ID and password 
+            auto* id   = consume_array<char>(&data, entry_header.id_len);
+            auto* pass = consume_array<char>(&data, entry_header.pass_len);
 
-    //Make sure we read everything
-    if (unencrypted_len != 0) return {};
+            //Push values into vector
+            result.push_back(pm::entry
+            {
+                pm::span<char>{id,   entry_header.id_len},
+                pm::span<char>{pass, entry_header.pass_len},
+            });
+        }
+    }
 
     //Return the result
     return(result);
@@ -136,13 +171,18 @@ pm::archive pm::read_archive(void* data, std::size_t len) noexcept
 
 static uint8_t arr[]
 { 
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-    0x01,0x00,0x00,0x00,0x0C,0x00,0x00,0x00,0x03,0x03,0x41,0x42,0x43,0x44,0x43,0x45,0xd2,0x04,0x00,0x00
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //HASH
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //
+    0xC3, 0xA0, 0x41, 0x42, 0x43, 0x44, 0x43, 0x45,                                                 //DATA
+    0x00, 0x00,                                                                                     //END MARKER
+    0x8A, 0x24, 0xAE, 0xD0, 0x45, 0xD8,                                                             //PADDING
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, //XORSHIFT SEED
 };
 
 void pm::test()
 {
+    auto password = "1234";
+
     std::ofstream test;
     test.open("test.bhpm", std::ios::binary | std::ios::out);
 
@@ -152,14 +192,20 @@ void pm::test()
     test << (uint8_t)0;
     test << (uint8_t)0;
 
-    char iv[16];
-    pm::get_random_bytes(iv, 16);
-    test.write(iv, 16);
+    uint8_t iv[16];
+    pm::get_random_bytes(iv);
+    test.write(reinterpret_cast<char*>(iv), 16);
 
-    void* data = nullptr;
+    decltype(arr) arr2{};
+    pm::xorshift_state xs_state{ {0x0807060504030201ULL, 0x1615141312111009ULL} };
+    auto arrspan = pm::span<uint8_t>{ arr };
+    xorshift_data(arrspan.slice(0, 48), xs_state).copy_to(arr2, sizeof(arr2));
+    arrspan.slice(48).copy_to(&arr2[48], sizeof(arr) - 48);
+
+    uint8_t* data = nullptr;
     auto datalen = std::size_t{ 0 };
-    pm::encrypt("1234", iv, arr, sizeof(arr), &data, &datalen);
-    test.write(static_cast<char const*>(data), datalen);
+    pm::encrypt(span<uint8_t>{ arr2 }, pm::span<uint8_t>{ reinterpret_cast<uint8_t*>(const_cast<char*>(password)), 4 }, span<uint8_t>{iv}, &data, &datalen);
+    test.write(reinterpret_cast<char*>(data), datalen);
 
     test.flush();
     test.close();
@@ -179,5 +225,5 @@ void pm::test2()
     test.read(data, size);
     test.close();
 
-    pm::read_archive(data, size);
+    pm::read_archive(span<std::uint8_t>{ reinterpret_cast<std::uint8_t*>(data), size });
 }

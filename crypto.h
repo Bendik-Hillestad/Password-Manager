@@ -2,19 +2,31 @@
 #define PM_CRYPTO_H
 #pragma once
 
+#include "span.h"
+
+#include <cstdint>
 #include <cstddef>
-#include <string_view>
 
 namespace pm
 {
     //Fills a buffer with random bytes using a CSPRNG
-    bool get_random_bytes(void* buffer, std::size_t len);
+    bool get_random_bytes(std::uint8_t* buffer, std::size_t len) noexcept;
 
-    //Encrypts a buffer with AES-128 using the provided password
-    bool encrypt(std::string_view password, void const* iv, void const* input, std::size_t input_len, void** output, std::size_t* output_len);
+    //Fills a buffer with random bytes using a CSPRNG
+    template<std::size_t N>
+    bool get_random_bytes(std::uint8_t(&buffer)[N]) noexcept
+    {
+        return get_random_bytes(buffer, N);
+    }
 
-    //Decrypts a buffer with AES-128 using the provided password
-    bool decrypt(std::string_view password, void const* iv, void const* input, std::size_t input_len, void** output, std::size_t* output_len);
+    //Calculates the SHA-256 hash of the input data
+    bool hash(span<std::uint8_t> data, uint8_t** result) noexcept;
+
+    //Encrypts the input with AES-128 using the provided password and initialization vector
+    bool encrypt(span<std::uint8_t> input, span<std::uint8_t> password, span<std::uint8_t> iv, uint8_t** output, std::size_t* output_len) noexcept;
+
+    //Decrypts the input with AES-128 using the provided password and initialization vector
+    bool decrypt(span<std::uint8_t> input, span<std::uint8_t> password, span<std::uint8_t> iv, uint8_t** output, std::size_t* output_len) noexcept;
 };
 
 #endif
