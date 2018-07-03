@@ -12,7 +12,7 @@ using std::uint64_t;
 #pragma pack(push, 1)
 struct bhpm_header
 {
-    uint8_t  magic[4];
+    uint8_t  magic[8];
     uint8_t  major_version;
     uint8_t  pad1;
     uint8_t  minor_version;
@@ -96,9 +96,10 @@ static constexpr auto FourCC(char const(&magic)[5])
             (magic[0] <<  0));
 }
 
-static bool check_magic(uint8_t(&magic)[4])
+static bool check_magic(uint8_t(&magic)[8])
 {
-    return((*reinterpret_cast<uint32_t*>(magic)) == FourCC("BHPM"));
+    return(((*reinterpret_cast<uint32_t*>(magic))     == FourCC("BHPM")) &&
+           ((*reinterpret_cast<uint32_t*>(&magic[4])) == 0x11223344UL));
 }
 
 std::vector<pm::entry> pm::read_archive(span<std::uint8_t> data) noexcept
@@ -187,6 +188,8 @@ void pm::test()
     test.open("test.bhpm", std::ios::binary | std::ios::out);
 
     test << "BHPM";
+    uint32_t magic = 0x11223344;
+    test.write(reinterpret_cast<char const*>(&magic), sizeof(uint32_t));
     test << (uint8_t)1;
     test << (uint8_t)0;
     test << (uint8_t)0;
