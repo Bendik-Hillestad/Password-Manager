@@ -13,10 +13,10 @@ namespace pm
     struct span
     {
     public:
-        using value_t = std::remove_cv_t<T>;
-        using index_t = std::ptrdiff_t;
+        using value_t  = std::remove_cv_t<T>;
+        using index_t  = std::ptrdiff_t;
 
-        struct const_iterator : public std::iterator
+        using iterator = struct const_iterator : public std::iterator
         <
             std::forward_iterator_tag,
             value_t, index_t, value_t const*, value_t const&
@@ -72,12 +72,12 @@ namespace pm
 
         constexpr auto begin() const noexcept
         {
-            return const_iterator{ this->ptr };
+            return iterator{ this->ptr };
         }
 
         constexpr auto end() const noexcept
         {
-            return const_iterator{ this->ptr + len };
+            return iterator{ this->ptr + this->len };
         }
 
         constexpr auto cbegin() const noexcept
@@ -87,7 +87,12 @@ namespace pm
 
         constexpr auto cend() const noexcept
         {
-            return const_iterator{ this->ptr + len };
+            return const_iterator{ this->ptr + this->len };
+        }
+
+        constexpr auto at(index_t offset) const noexcept
+        {
+            return *(this->ptr + offset);
         }
 
         constexpr auto slice(index_t offset) const noexcept
