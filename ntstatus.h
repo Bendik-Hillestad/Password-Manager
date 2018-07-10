@@ -20,7 +20,7 @@ namespace pm
     };
 
     #define X(e) case ntstatus_t::e: return #e;
-    static std::string_view to_string(ntstatus_t status) noexcept
+    static constexpr std::string_view to_string(ntstatus_t status) noexcept
     {
         switch (status)
         {
