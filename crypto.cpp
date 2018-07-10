@@ -1,6 +1,5 @@
 #include "crypto.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -11,9 +10,9 @@
 
 #pragma comment(lib, "bcrypt.lib")
 
-bool pm::get_random_bytes(std::uint8_t* buffer, std::size_t len) noexcept
+pm::ntstatus_t pm::get_random_bytes(std::uint8_t* buffer, std::size_t len) noexcept
 {
-    NTSTATUS          success = static_cast<NTSTATUS>(0xC0000001L);
+    NTSTATUS          success = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE hRngAlg = nullptr;
 
     //Open algorithm provider
@@ -33,12 +32,12 @@ cleanup:
         BCryptCloseAlgorithmProvider(hRngAlg, 0);
 
     //Return the status
-    return(success >= 0);
+    return static_cast<ntstatus_t>(success);
 }
 
-bool pm::hash(pm::span<std::uint8_t> data, std::uint8_t** result) noexcept
+pm::ntstatus_t pm::hash(pm::span<std::uint8_t> data, pm::owned_byte_array* result) noexcept
 {
-    NTSTATUS           success      = static_cast<NTSTATUS>(0xC0000001L);
+    NTSTATUS           success      = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE  hShaAlg      = nullptr;
     BCRYPT_HASH_HANDLE hHash        = nullptr;
     DWORD              cbData       = 0;
@@ -112,7 +111,8 @@ bool pm::hash(pm::span<std::uint8_t> data, std::uint8_t** result) noexcept
     }
 
     //Assign the result
-    *result = pbHash;
+    *result = std::make_unique<std::uint8_t[]>(cbHash);
+    std::memcpy(result->get(), pbHash, cbHash);
 
 cleanup:
     //Close algorithm provider
@@ -127,26 +127,26 @@ cleanup:
     if (pbHashObject)
         HeapFree(GetProcessHeap(), 0, pbHashObject);
 
-    //If we failed, release the memory for the result
-    if (pbHash && success < 0)
+    //Release the memory for the result
+    if (pbHash)
         HeapFree(GetProcessHeap(), 0, pbHash);
 
     //Return the status
-    return(success >= 0);
+    return static_cast<ntstatus_t>(success);
 }
 
-bool pm::encrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, std::uint8_t** output, std::size_t* output_len) noexcept
+pm::ntstatus_t pm::encrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, pm::owned_byte_array* output, std::size_t* output_len) noexcept
 {
-    NTSTATUS           success      = static_cast<NTSTATUS>(0xC0000001L);
+    NTSTATUS           success      = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE  hAesAlg      = nullptr;
     BCRYPT_KEY_HANDLE  hKey         = nullptr;
     DWORD              cbData       = 0;
     DWORD              cbKeyObject  = 0;
-    DWORD              cbHash       = 32;
-    DWORD              cbIV         = 16;
+    DWORD const        cbHash       = 32;
+    DWORD const        cbIV         = 16;
     DWORD              cbCipherText = 0;
     PBYTE              pbKeyObject  = nullptr;
-    PBYTE              pbHash       = nullptr;
+    owned_byte_array   pbHash       = nullptr;
     PBYTE              pbIV         = nullptr;
     PBYTE              pbCipherText = nullptr;
 
@@ -193,15 +193,15 @@ bool pm::encrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, 
     std::memcpy(pbIV, iv.data(), cbIV);
 
     //Hash the input password
-    success = pm::hash(password, &pbHash);
-    if (success == 0)
+    success = static_cast<NTSTATUS>(pm::hash(password, &pbHash));
+    if (success < 0)
     {
         //Go to cleanup
         goto cleanup;
     }
 
     //Generate the key object
-    success = BCryptGenerateSymmetricKey(hAesAlg, &hKey, pbKeyObject, cbKeyObject, pbHash, cbHash, 0);
+    success = BCryptGenerateSymmetricKey(hAesAlg, &hKey, pbKeyObject, cbKeyObject, pbHash.get(), cbHash, 0);
     if (success < 0)
     {
         //Go to cleanup
@@ -233,8 +233,9 @@ bool pm::encrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, 
     }
 
     //Assign the result
-    *output     = pbCipherText;
+    *output     = std::make_unique<std::uint8_t[]>(cbCipherText);
     *output_len = cbCipherText;
+    std::memcpy(output->get(), pbCipherText, cbCipherText);
 
 cleanup:
     //Close algorithm provider
@@ -249,34 +250,30 @@ cleanup:
     if (pbKeyObject)
         HeapFree(GetProcessHeap(), 0, pbKeyObject);
 
-    //Release the memory for the hash
-    if (pbHash)
-        HeapFree(GetProcessHeap(), 0, pbHash);
-
     //Release the memory for the IV
     if (pbIV)
         HeapFree(GetProcessHeap(), 0, pbIV);
 
-    //If we failed, release the memory for the result
+    //Release the memory for the cipher text
     if (pbCipherText)
         HeapFree(GetProcessHeap(), 0, pbCipherText);
 
     //Return the status
-    return(success >= 0);
+    return static_cast<ntstatus_t>(success);
 }
 
-bool pm::decrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, std::uint8_t** output, std::size_t* output_len) noexcept
+pm::ntstatus_t pm::decrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, pm::owned_byte_array* output, std::size_t* output_len) noexcept
 {
-    NTSTATUS           success      = static_cast<NTSTATUS>(0xC0000001L);
+    NTSTATUS           success      = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE  hAesAlg      = nullptr;
     BCRYPT_KEY_HANDLE  hKey         = nullptr;
     DWORD              cbData       = 0;
     DWORD              cbKeyObject  = 0;
-    DWORD              cbHash       = 32;
-    DWORD              cbIV         = 16;
+    DWORD const        cbHash       = 32;
+    DWORD const        cbIV         = 16;
     DWORD              cbClearText  = 0;
     PBYTE              pbKeyObject  = nullptr;
-    PBYTE              pbHash       = nullptr;
+    owned_byte_array   pbHash       = nullptr;
     PBYTE              pbIV         = nullptr;
     PBYTE              pbClearText  = nullptr;
 
@@ -323,15 +320,15 @@ bool pm::decrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, 
     std::memcpy(pbIV, iv.data(), cbIV);
 
     //Hash the input password
-    success = pm::hash(password, &pbHash);
-    if (success == 0)
+    success = static_cast<NTSTATUS>(pm::hash(password, &pbHash));
+    if (success < 0)
     {
         //Go to cleanup
         goto cleanup;
     }
 
     //Generate the key object
-    success = BCryptGenerateSymmetricKey(hAesAlg, &hKey, pbKeyObject, cbKeyObject, pbHash, cbHash, 0);
+    success = BCryptGenerateSymmetricKey(hAesAlg, &hKey, pbKeyObject, cbKeyObject, pbHash.get(), cbHash, 0);
     if (success < 0)
     {
         //Go to cleanup
@@ -363,8 +360,9 @@ bool pm::decrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, 
     }
 
     //Assign the result
-    *output     = pbClearText;
+    *output     = std::make_unique<std::uint8_t[]>(cbClearText);
     *output_len = cbClearText;
+    std::memcpy(output->get(), pbClearText, cbClearText);
 
 cleanup:
     //Close algorithm provider
@@ -379,18 +377,14 @@ cleanup:
     if (pbKeyObject)
         HeapFree(GetProcessHeap(), 0, pbKeyObject);
 
-    //Release the memory for the hash
-    if (pbHash)
-        HeapFree(GetProcessHeap(), 0, pbHash);
-
     //Release the memory for the IV
     if (pbIV)
         HeapFree(GetProcessHeap(), 0, pbIV);
 
-    //If we failed, release the memory for the result
+    //Release the memory for the clear text
     if (pbClearText)
         HeapFree(GetProcessHeap(), 0, pbClearText);
 
     //Return the status
-    return(success >= 0);
+    return static_cast<ntstatus_t>(success);
 }

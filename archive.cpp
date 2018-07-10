@@ -48,7 +48,7 @@ static T consume(pm::span<uint8_t>* data)
     *data = data->slice(sizeof(T));
 
     //Return the result
-    return(result);
+    return result;
 }
 
 template<typename T>
@@ -64,7 +64,7 @@ static T* consume_array(pm::span<uint8_t>* data, std::size_t count)
     *data = data->slice(sizeof(T) * count);
 
     //Return the result
-    return(result);
+    return result;
 }
 
 static pm::span<uint8_t> xorshift_data(pm::span<uint8_t> input, pm::xorshift_state xs) noexcept
@@ -117,13 +117,13 @@ std::vector<pm::entry> pm::read_archive(span<std::uint8_t> data) noexcept
     if (header.pad2 != 0)           return {};
 
     //Decrypt the encrypted block
-    uint8_t* unencrypted_data = nullptr;
-    auto  unencrypted_len  = std::size_t{0};
+    auto  unencrypted_data = pm::owned_byte_array{ nullptr };
+    auto  unencrypted_len  = std::size_t{ 0 };
     auto  success = pm::decrypt(pm::span<uint8_t>{ data }, pm::span<uint8_t>{ reinterpret_cast<uint8_t*>(const_cast<char*>(password)), 4 }, span<uint8_t>{reinterpret_cast<uint8_t*>(header.iv), 16}, &unencrypted_data, &unencrypted_len);
-    if (!success) return {};
+    if (success != ntstatus_t::SUCCESS) return {};
 
     //Wrap in a span
-    data = pm::span<std::uint8_t>{ static_cast<std::uint8_t*>(unencrypted_data), static_cast<std::ptrdiff_t>(unencrypted_len) };
+    data = pm::span<std::uint8_t>{ unencrypted_data.get(), static_cast<std::ptrdiff_t>(unencrypted_len) };
 
     //Read the xorshift seed
     auto seed_span = data.slice(data.size() - sizeof(bhpm_xorshift_seed));
@@ -163,7 +163,7 @@ std::vector<pm::entry> pm::read_archive(span<std::uint8_t> data) noexcept
     }
 
     //Return the result
-    return(result);
+    return result;
 }
 
 #include <iostream>
@@ -205,10 +205,10 @@ void pm::test()
     xorshift_data(arrspan.slice(0, 48), xs_state).copy_to(arr2, sizeof(arr2));
     arrspan.slice(48).copy_to(&arr2[48], sizeof(arr) - 48);
 
-    uint8_t* data = nullptr;
+    auto data    = pm::owned_byte_array{ nullptr };;
     auto datalen = std::size_t{ 0 };
     pm::encrypt(span<uint8_t>{ arr2 }, pm::span<uint8_t>{ reinterpret_cast<uint8_t*>(const_cast<char*>(password)), 4 }, span<uint8_t>{iv}, &data, &datalen);
-    test.write(reinterpret_cast<char*>(data), datalen);
+    test.write(reinterpret_cast<char*>(data.get()), datalen);
 
     test.flush();
     test.close();
