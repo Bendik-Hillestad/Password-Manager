@@ -28,6 +28,25 @@ namespace pm
             return this->state[1] + y;
         }
 
+        std::uint8_t* get_bytes(std::uint32_t* count) noexcept
+        {
+            //Round up to a multiple of 8 bytes
+            *count = ((*count) + (sizeof(std::uint64_t) - 1)) & ~(sizeof(std::uint64_t) - 1);
+
+            //Allocate the buffer
+            auto* buf = new std::uint8_t[*count];
+            auto* p   = reinterpret_cast<std::uint64_t*>(buf);
+
+            //Fill the buffer
+            for (std::uint32_t i = 0; i < (*count) / sizeof(std::uint64_t); i++)
+            {
+                p[i] = this->next();
+            }
+
+            //Return the buffer
+            return buf;
+        }
+
     private:
         std::uint64_t state[2];
     };
