@@ -1,7 +1,9 @@
+#ifndef PM_NTSTATUS_H
+#define PM_NTSTATUS_H
 #pragma once
 
 #include <cstdint>
-#include <string_view>
+#include <system_error>
 
 namespace pm
 {
@@ -19,22 +21,13 @@ namespace pm
         SUCCESS             = static_cast<std::int32_t>(0x00000000L)
     };
 
-    #define X(e) case ntstatus_t::e: return #e;
-    static constexpr std::string_view to_string(ntstatus_t status) noexcept
-    {
-        switch (status)
-        {
-            X(UNSUCCESSFUL)
-            X(INVALID_HANDLE)
-            X(INVALID_PARAMETER)
-            X(NO_MEMORY)
-            X(BUFFER_TOO_SMALL)
-            X(NOT_SUPPORTED)
-            X(INVALID_BUFFER_SIZE)
-            X(NOT_FOUND)
-            X(SUCCESS)
-            default: return "Unknown status";
-        }
-    }
-    #undef CASE
+    std::error_code make_error_code(ntstatus_t) noexcept;
 };
+
+namespace std
+{
+    template<>
+    struct is_error_code_enum<pm::ntstatus_t> : true_type {};
+};
+
+#endif

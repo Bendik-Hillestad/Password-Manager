@@ -10,7 +10,7 @@
 
 #pragma comment(lib, "bcrypt.lib")
 
-pm::ntstatus_t pm::get_random_bytes(std::uint8_t* buffer, std::size_t len) noexcept
+std::error_code pm::get_random_bytes(std::uint8_t* buffer, std::size_t len) noexcept
 {
     NTSTATUS          success = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE hRngAlg = nullptr;
@@ -35,7 +35,7 @@ cleanup:
     return static_cast<ntstatus_t>(success);
 }
 
-pm::ntstatus_t pm::hash(pm::span<std::uint8_t> data, pm::owned_byte_array* result) noexcept
+std::error_code pm::hash(span<std::uint8_t> data, owned_byte_array* result) noexcept
 {
     NTSTATUS           success      = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE  hShaAlg      = nullptr;
@@ -135,7 +135,7 @@ cleanup:
     return static_cast<ntstatus_t>(success);
 }
 
-pm::ntstatus_t pm::encrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, pm::owned_byte_array* output, std::size_t* output_len) noexcept
+std::error_code pm::encrypt(span<std::uint8_t> input, span<std::uint8_t> password, span<std::uint8_t> iv, owned_byte_array* output, std::size_t* output_len) noexcept
 {
     NTSTATUS           success      = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE  hAesAlg      = nullptr;
@@ -193,7 +193,7 @@ pm::ntstatus_t pm::encrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> 
     std::memcpy(pbIV, iv.data(), cbIV);
 
     //Hash the input password
-    success = static_cast<NTSTATUS>(pm::hash(password, &pbHash));
+    success = static_cast<NTSTATUS>(pm::hash(password, &pbHash).value());
     if (success < 0)
     {
         //Go to cleanup
@@ -262,7 +262,7 @@ cleanup:
     return static_cast<ntstatus_t>(success);
 }
 
-pm::ntstatus_t pm::decrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> password, pm::span<std::uint8_t> iv, pm::owned_byte_array* output, std::size_t* output_len) noexcept
+std::error_code pm::decrypt(span<std::uint8_t> input, span<std::uint8_t> password, span<std::uint8_t> iv, owned_byte_array* output, std::size_t* output_len) noexcept
 {
     NTSTATUS           success      = static_cast<NTSTATUS>(ntstatus_t::UNSUCCESSFUL);
     BCRYPT_ALG_HANDLE  hAesAlg      = nullptr;
@@ -320,7 +320,7 @@ pm::ntstatus_t pm::decrypt(pm::span<std::uint8_t> input, pm::span<std::uint8_t> 
     std::memcpy(pbIV, iv.data(), cbIV);
 
     //Hash the input password
-    success = static_cast<NTSTATUS>(pm::hash(password, &pbHash));
+    success = static_cast<NTSTATUS>(pm::hash(password, &pbHash).value());
     if (success < 0)
     {
         //Go to cleanup
