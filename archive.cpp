@@ -1,7 +1,10 @@
+#pragma warning(disable:4996) //Disable useless warning
+
 #include "archive.h"
 #include "crypto.h"
 #include "xorshift.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 
@@ -66,12 +69,12 @@ static T* consume_array(pm::span<uint8_t>* data, std::size_t count)
     //Return the result
     return result;
 }
-
-static pm::span<uint8_t> xorshift_data(pm::span<uint8_t> input, pm::xorshift_state xs) noexcept
+ 
+static pm::span<uint8_t> xorshift_data(pm::span<uint8_t> input, pm::xorshift_state* xs) noexcept
 {
     //Make a copy of the data
-    auto* copy = new uint8_t[input.size()], *p = copy;
-    for (auto const &u8 : input) *p++ = u8;
+    auto* copy = new uint8_t[input.size()];
+    std::copy(input.cbegin(), input.cend(), copy);
 
     //Reinterpret as an array of u64
     auto* arr = reinterpret_cast<uint64_t*>(copy);
@@ -79,7 +82,7 @@ static pm::span<uint8_t> xorshift_data(pm::span<uint8_t> input, pm::xorshift_sta
 
     //Iterate over the array and xor it
     for (decltype(size) i = 0; i < size; i++)
-        arr[i] ^= xs.next();
+        arr[i] ^= xs->next();
 
     //Reinterpret back as an array of u8
     copy = reinterpret_cast<uint8_t*>(arr);
@@ -88,7 +91,7 @@ static pm::span<uint8_t> xorshift_data(pm::span<uint8_t> input, pm::xorshift_sta
     return { copy, input.size() };
 }
 
-static constexpr auto FourCC(char const(&magic)[5])
+static constexpr uint32_t FourCC(char const(&magic)[5])
 {
     return ((magic[3] << 24) | 
             (magic[2] << 16) | 
@@ -130,7 +133,7 @@ std::vector<pm::entry> pm::read_archive(span<std::uint8_t> data) noexcept
     auto xs_state = pm::xorshift_state{ consume<bhpm_xorshift_seed>(&seed_span).seed };
 
     //Xorshift the data
-    data = xorshift_data(data.slice(0, 48), xs_state);
+    data = xorshift_data(data.slice(0, 48), &xs_state);
 
     //Read the hash
     auto hash = consume<bhpm_data_hash>(&data);
@@ -196,18 +199,18 @@ void pm::test()
     test << (uint8_t)0;
 
     uint8_t iv[16];
-    pm::get_random_bytes(iv);
+    auto err = pm::get_random_bytes(iv);
     test.write(reinterpret_cast<char*>(iv), 16);
 
     decltype(arr) arr2{};
     pm::xorshift_state xs_state{ {0x0807060504030201ULL, 0x1615141312111009ULL} };
     auto arrspan = pm::span<uint8_t>{ arr };
-    xorshift_data(arrspan.slice(0, 48), xs_state).copy_to(arr2, sizeof(arr2));
+    xorshift_data(arrspan.slice(0, 48), &xs_state).copy_to(arr2, sizeof(arr2));
     arrspan.slice(48).copy_to(&arr2[48], sizeof(arr) - 48);
 
     auto data    = pm::owned_byte_array{ nullptr };;
     auto datalen = std::size_t{ 0 };
-    pm::encrypt(span<uint8_t>{ arr2 }, pm::span<uint8_t>{ reinterpret_cast<uint8_t*>(const_cast<char*>(password)), 4 }, span<uint8_t>{iv}, &data, &datalen);
+    err = pm::encrypt(span<uint8_t>{ arr2 }, pm::span<uint8_t>{ reinterpret_cast<uint8_t*>(const_cast<char*>(password)), 4 }, span<uint8_t>{iv}, &data, &datalen);
     test.write(reinterpret_cast<char*>(data.get()), datalen);
 
     test.flush();
