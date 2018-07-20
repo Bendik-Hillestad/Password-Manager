@@ -1,14 +1,18 @@
 #include "screen.h"
 
-#include <cstdio>
 #include <cstdlib>
-#include <type_traits>
+#include <vector>
+#include <array>
 #include <malloc.h>
+#include <type_traits>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 static_assert(std::is_same_v<pm::ui::buffer_handle, HANDLE>);
+
+static constexpr auto READ_LINE_VISIBLE = ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_QUICK_EDIT_MODE | ENABLE_INSERT_MODE | ENABLE_PROCESSED_INPUT | ENABLE_EXTENDED_FLAGS;
+static constexpr auto READ_LINE_HIDDEN  = ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT;
 
 std::uint16_t get_foreground_color(pm::ui::color foreground)
 {
@@ -189,6 +193,9 @@ void pm::ui::screen::paint(color paintColor, std::int16_t x, std::int16_t y, std
 
 void pm::ui::screen::write(color fgColor, std::string_view text) noexcept
 {
+    //Get the length of the string
+    auto strLen = static_cast<DWORD>(text.size());
+
     //Get the associated foreground color
     auto fg = get_foreground_color(fgColor);
 
@@ -198,8 +205,8 @@ void pm::ui::screen::write(color fgColor, std::string_view text) noexcept
 
     //Get the attributes in the region we want to write to
     DWORD numAttrRead;
-    auto* attr = static_cast<WORD*>(alloca(text.size() * sizeof(WORD)));
-    ReadConsoleOutputAttribute(this->buffer, attr, text.size(), info.dwCursorPosition, &numAttrRead);
+    auto* attr = static_cast<WORD*>(alloca(strLen * sizeof(WORD)));
+    ReadConsoleOutputAttribute(this->buffer, attr, strLen, info.dwCursorPosition, &numAttrRead);
 
     //Extract the background and add the foreground color
     for (DWORD i = 0; i < numAttrRead; i++) 
@@ -207,15 +214,15 @@ void pm::ui::screen::write(color fgColor, std::string_view text) noexcept
 
     //Write back the attributes
     DWORD numAttrWritten;
-    WriteConsoleOutputAttribute(this->buffer, attr, text.size(), info.dwCursorPosition, &numAttrWritten);
+    WriteConsoleOutputAttribute(this->buffer, attr, strLen, info.dwCursorPosition, &numAttrWritten);
 
     //Write text to our buffer at the current cursor position
     DWORD numCharWritten;
-    WriteConsoleOutputCharacterA(this->buffer, text.data(), text.size(), info.dwCursorPosition, &numCharWritten);
+    WriteConsoleOutputCharacterA(this->buffer, text.data(), strLen, info.dwCursorPosition, &numCharWritten);
 
     //Calculate the new cursor position
-    SHORT newX = (info.dwCursorPosition.X + numCharWritten) % info.dwSize.X;
-    SHORT newY = info.dwCursorPosition.Y + ((info.dwCursorPosition.X + numCharWritten) / info.dwSize.X);
+    SHORT newX = static_cast<SHORT>((info.dwCursorPosition.X + numCharWritten) % info.dwSize.X);
+    SHORT newY = static_cast<SHORT>(info.dwCursorPosition.Y + ((info.dwCursorPosition.X + numCharWritten) / info.dwSize.X));
 
     //Move cursor
     SetConsoleCursorPosition(this->buffer, COORD{ newX, newY });
@@ -228,4 +235,114 @@ void pm::ui::screen::write(color fgColor, std::string_view text, std::int16_t x,
 
     //Write the text
     this->write(fgColor, text);
+}
+
+char* pm::ui::screen::read_text(color fgColor, color bgColor) noexcept
+{
+    //Get the associated foreground/background colors
+    auto fg = get_foreground_color(fgColor);
+    auto bg = get_background_color(bgColor);
+
+    //Any input from the user will overwrite the existing text attributes buffer, 
+    //so we just force it to use a particular attribute.
+    SetConsoleTextAttribute(this->buffer, fg | bg);
+
+    //Get the input handle
+    auto hStdin = GetStdHandle(STD_INPUT_HANDLE);
+
+    //Set the input mode
+    SetConsoleMode(hStdin, READ_LINE_VISIBLE);
+
+    //Clear any existing input in the buffer
+    FlushConsoleInputBuffer(hStdin);
+
+    //Start our reading loop
+    std::vector<char> vec{};
+    while (true)
+    {
+        //Read some input
+        std::array<char, 16> buf{}; DWORD read;
+        ReadFile(hStdin, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr);
+
+        //Look for the carriage return
+        auto end = std::find(buf.begin(), buf.begin() + read, '\r');
+
+        //Copy the input into the vector
+        std::copy(buf.begin(), end, std::back_inserter(vec));
+
+        //Exit if we found the carriage return
+        if (*end == '\r') break;
+    }
+
+    //Clear any leftover input in the buffer
+    FlushConsoleInputBuffer(hStdin);
+
+    //Allocate a buffer on the heap to contain the value we read + zero terminator
+    auto* ret = new char[vec.size() + 1]; auto* ptr = ret;
+
+    //Copy from the vector into the array
+    for (auto i = vec.begin(); i != vec.end(); i++, ptr++)
+    {
+        *ptr = *i;
+    }
+    ret[vec.size()] = '\0';
+
+    //Return the string
+    return ret;
+}
+
+char* pm::ui::screen::read_hidden() noexcept
+{
+    //Get the input handle
+    auto hStdin = GetStdHandle(STD_INPUT_HANDLE);
+
+    //Set the input mode
+    SetConsoleMode(hStdin, READ_LINE_HIDDEN);
+
+    //Clear any existing input in the buffer
+    FlushConsoleInputBuffer(hStdin);
+
+    //Start our reading loop
+    std::vector<char> vec{};
+    while (true)
+    {
+        //Read some input
+        std::array<char, 16> buf{}; DWORD read;
+        ReadFile(hStdin, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr);
+
+        //Look for the carriage return
+        auto end = std::find(buf.begin(), buf.begin() + read, '\r');
+
+        //Copy the input into the vector
+        std::copy(buf.begin(), end, std::back_inserter(vec));
+
+        //Exit if we found the carriage return
+        if (*end == '\r') break;
+    }
+
+    //Clear any leftover input in the buffer
+    FlushConsoleInputBuffer(hStdin);
+
+    //Allocate a buffer on the heap to contain the value we read + zero terminator
+    auto* ret = new char[vec.size() + 1]; auto* ptr = ret;
+
+    //Copy from the vector into the array
+    for (auto i = vec.begin(); i != vec.end(); i++, ptr++)
+    {
+        *ptr = *i;
+    }
+    ret[vec.size()] = '\0';
+
+    //Return the string
+    return ret;
+}
+
+std::int16_t pm::ui::screen::get_width() const noexcept
+{
+    return this->width;
+}
+
+std::int16_t pm::ui::screen::get_height() const noexcept
+{
+    return this->height;
 }
