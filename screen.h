@@ -26,6 +26,13 @@ namespace pm::ui
         WHITE
     };
 
+    enum class align : std::uint8_t
+    {
+        LEFT,
+        MIDDLE,
+        RIGHT
+    };
+
     using buffer_handle = void*;
 
     struct screen
@@ -38,7 +45,7 @@ namespace pm::ui
         void  clear_screen(color clearColor) noexcept;
         void  paint       (color paintColor, std::int16_t x, std::int16_t y, std::int16_t width, std::int16_t height) noexcept;
         void  write       (color fgColor, std::string_view text) noexcept;
-        void  write       (color fgColor, std::string_view text, std::int16_t x, std::int16_t y) noexcept;
+        void  write       (color fgColor, std::string_view text, std::int16_t x, std::int16_t y, align hAlign = align::LEFT) noexcept;
         char* read_text   (color fgColor, color bgColor) noexcept;
         char* read_hidden () noexcept;
 

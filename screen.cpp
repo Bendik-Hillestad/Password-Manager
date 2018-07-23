@@ -11,8 +11,8 @@
 
 static_assert(std::is_same_v<pm::ui::buffer_handle, HANDLE>);
 
-static constexpr auto READ_LINE_VISIBLE = ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_QUICK_EDIT_MODE | ENABLE_INSERT_MODE | ENABLE_PROCESSED_INPUT | ENABLE_EXTENDED_FLAGS;
-static constexpr auto READ_LINE_HIDDEN  = ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT;
+static constexpr DWORD READ_LINE_VISIBLE = ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_QUICK_EDIT_MODE | ENABLE_INSERT_MODE | ENABLE_PROCESSED_INPUT | ENABLE_EXTENDED_FLAGS;
+static constexpr DWORD READ_LINE_HIDDEN  = ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT;
 
 std::uint16_t get_foreground_color(pm::ui::color foreground)
 {
@@ -228,8 +228,26 @@ void pm::ui::screen::write(color fgColor, std::string_view text) noexcept
     SetConsoleCursorPosition(this->buffer, COORD{ newX, newY });
 }
 
-void pm::ui::screen::write(color fgColor, std::string_view text, std::int16_t x, std::int16_t y) noexcept
+void pm::ui::screen::write(color fgColor, std::string_view text, std::int16_t x, std::int16_t y, align hAlign) noexcept
 {
+    //Check the alignment
+    switch (hAlign)
+    {
+        //Do nothing if LEFT
+
+        case align::MIDDLE:
+        {
+            //Subtract half-width from x
+            x -= text.length() / 2;
+        } break;
+
+        case align::RIGHT:
+        {
+            //Subtract width from x
+            x -= text.length();
+        } break;
+    }
+
     //Move the cursor
     SetConsoleCursorPosition(this->buffer, COORD{ x, y });
 
