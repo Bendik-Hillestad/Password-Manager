@@ -264,6 +264,8 @@ static constexpr word const sha256_initial_hash_value[8]
 
 /* Implementation */
 
+using std::uint64_t;
+
 void pm::security::sha256::sha256_context::init() noexcept
 {
     //Setup the state
@@ -273,51 +275,6 @@ void pm::security::sha256::sha256_context::init() noexcept
         std::end  (sha256_initial_hash_value),
         std::begin(this->state)
     );
-}
-
-byte* pm::security::sha256::pad(byte const* data, std::uint64_t* size) noexcept
-{
-    using std::uint64_t;
-
-    constexpr auto const mask    = static_cast<uint64_t>(sha256::block_length - 1);
-    constexpr auto const min_pad = 1 + sizeof(uint64_t); //The byte 0x80 + length of message
-
-    //Check that it's not too big
-    assert(*size < max_message_length);
-
-    //Calculate how big of an allocation we must make
-    uint64_t const new_size = (((*size) + min_pad) + mask) & ~mask;
-
-    //Allocate the data
-    byte* new_data = new byte[new_size];
-
-    //Copy the data
-    uint64_t i = 0;
-    for (; i < *size; i++) new_data[i] = data[i];
-
-    //Pad the data
-    new_data[i++] = static_cast<byte>(0x80);
-    for (; i < (new_size - sizeof(uint64_t)); i++) new_data[i] = 0;
-
-    //Add the length
-    auto const bit_count = (*size) * 8;
-#if (BYTE_ORDER == LITTLE_ENDIAN)
-    *reinterpret_cast<uint64_t*>(&new_data[i]) =
-               ((bit_count & 0x00000000000000FFull) << 56) |
-               ((bit_count & 0x000000000000FF00ull) << 40) |
-               ((bit_count & 0x0000000000FF0000ull) << 24) |
-               ((bit_count & 0x00000000FF000000ull) <<  8) |
-               ((bit_count & 0x000000FF00000000ull) >>  8) |
-               ((bit_count & 0x0000FF0000000000ull) >> 24) |
-               ((bit_count & 0x00FF000000000000ull) >> 40) |
-               ((bit_count & 0xFF00000000000000ull) >> 56);
-#else
-    *reinterpret_cast<uint64_t*>(&new_data[i]) = bit_count;
-#endif
-
-    //Save the new size and return the data
-    *size = new_size;
-    return new_data;
 }
 
 void pm::security::sha256::sha256_context::update(byte const* data) noexcept
@@ -380,22 +337,101 @@ void pm::security::sha256::sha256_context::update(byte const* data) noexcept
     this->state[7] += h;
 }
 
-pm::security::sha256::result_type pm::security::sha256::sha256_context::get_digest() noexcept
+void pm::security::sha256::sha256_context::update_final(byte const* data, uint64_t data_length, uint64_t message_length) noexcept
 {
-    result_type ret;
+    //Check that it's not too big
+    assert(data_length < sha256::block_length);
+
+    //Preprocess the block
+    auto [padded_data, padded_size] = sha256::pad_message(data, data_length, message_length);
+
+    //Process the blocks
+    for (uint64_t i = 0; i < (padded_size / sha256::block_length); i++)
+        this->update(padded_data + (i * sha256::block_length));
+
+    //Cleanup
+    delete[] padded_data;
+}
+
+byte* pm::security::sha256::sha256_context::get_digest() noexcept
+{
+    byte* result = new byte[digest_length];
 
     //Iterate over the words
-    for (unsigned int i = 0; i < this->state.size(); i++)
+    for (unsigned int i = 0; i < digest_length / sizeof(word); i++)
     {
         //Read the word
         word w = this->state[i];
 
         //Insert the bytes in big-endian order
-        ret[i * 4 + 0] = static_cast<byte>((w & 0xFF000000u) >> 24);
-        ret[i * 4 + 1] = static_cast<byte>((w & 0x00FF0000u) >> 16);
-        ret[i * 4 + 2] = static_cast<byte>((w & 0x0000FF00u) >>  8);
-        ret[i * 4 + 3] = static_cast<byte>((w & 0x000000FFu) >>  0);
+        result[i * 4 + 0] = static_cast<byte>((w & 0xFF000000u) >> 24);
+        result[i * 4 + 1] = static_cast<byte>((w & 0x00FF0000u) >> 16);
+        result[i * 4 + 2] = static_cast<byte>((w & 0x0000FF00u) >>  8);
+        result[i * 4 + 3] = static_cast<byte>((w & 0x000000FFu) >>  0);
     }
 
-    return ret;
+    return result;
+}
+
+std::tuple<byte*, uint64_t> pm::security::sha256::pad_message(byte const* data, uint64_t data_length, uint64_t message_length) noexcept
+{
+    constexpr auto const mask    = static_cast<uint64_t>(sha256::block_length - 1);
+    constexpr auto const min_pad = 1 + sizeof(uint64_t); //The byte 0x80 + length of message
+
+    //Check that it's not too big
+    assert(message_length < sha256::max_message_length);
+
+    //Calculate how big of an allocation we must make
+    uint64_t const padded_size = ((data_length + min_pad) + mask) & ~mask;
+
+    //Allocate space for the padded data
+    byte* padded_data = new byte[padded_size];
+
+    //Copy the data
+    uint64_t i = 0;
+    for (; i < data_length; i++) padded_data[i] = data[i];
+
+    //Pad the data
+    padded_data[i++] = static_cast<byte>(0x80);
+    for (; i < (padded_size - sizeof(uint64_t)); i++) 
+        padded_data[i] = 0;
+
+    //Add the length
+    auto const bit_count = message_length * 8;
+#if (BYTE_ORDER == LITTLE_ENDIAN)
+    *reinterpret_cast<uint64_t*>(&padded_data[i]) =
+               ((bit_count & 0x00000000000000FFull) << 56) |
+               ((bit_count & 0x000000000000FF00ull) << 40) |
+               ((bit_count & 0x0000000000FF0000ull) << 24) |
+               ((bit_count & 0x00000000FF000000ull) <<  8) |
+               ((bit_count & 0x000000FF00000000ull) >>  8) |
+               ((bit_count & 0x0000FF0000000000ull) >> 24) |
+               ((bit_count & 0x00FF000000000000ull) >> 40) |
+               ((bit_count & 0xFF00000000000000ull) >> 56);
+#else
+    *reinterpret_cast<uint64_t*>(&padded_data[i]) = bit_count;
+#endif
+
+    return { padded_data, padded_size };
+}
+
+byte* pm::security::sha256::compute_hash(byte const* data, uint64_t data_length) noexcept
+{
+    //Prepare the message
+    auto [padded_data, padded_size] = sha256::pad_message(data, data_length, data_length);
+    
+    //Initialize the hashing primitive
+    sha256_context ctx;
+    ctx.init();
+
+    //Process the blocks
+    for (uint64_t i = 0; i < (padded_size / sha256::block_length); i++)
+        ctx.update(padded_data + (i * sha256::block_length));
+
+    //Retrieve the hash
+    byte* hash = ctx.get_digest();
+
+    //Cleanup and return result
+    delete[] padded_data;
+    return hash;
 }

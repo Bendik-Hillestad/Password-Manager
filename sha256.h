@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <tuple>
 
 namespace pm::security
 {
@@ -21,17 +22,14 @@ namespace pm::security
         using byte = std::uint8_t;
         using word = std::uint32_t;
 
-        using result_type = std::array<byte, digest_length>;
-        using state_type  = std::array<word, digest_length / sizeof(word)>;
-
-        /* 
-         * (Optional) Pads the message according to the specification,
-         * ensuring that its size is a multiple of the block length
-         * and that the length is encoded in the final block.
-         * Note: Allocates new memory.
+        /*
+         * Computes the SHA-256 hash of a data string.
          */
-        static byte* pad(byte const* data, std::uint64_t* size) noexcept;
+        static byte* compute_hash(byte const* data, std::uint64_t data_length) noexcept;
 
+        /*
+         * A low-level hashing primitive.
+         */
         using context = struct sha256_context
         {
         public:
@@ -47,18 +45,38 @@ namespace pm::security
              * message. Must be called for each block length
              * sized chunk of the message.
              */
-            void update (byte const* data) noexcept;
+            void update(byte const* data) noexcept;
+
+            /*
+             * Pads and embeds the message length into the
+             * final block and proceeds with feeding the
+             * resulting block(s) to the SHA-256 transform.
+             */
+            void update_final
+            (
+                byte const* data,
+                std::uint64_t data_length,
+                std::uint64_t message_length
+            ) noexcept;
 
             /* 
              * Retrieves the message digest.
              */
-            result_type get_digest() noexcept;   
+            byte* get_digest() noexcept;
 
         private:
-            state_type state;
+            std::array<word, digest_length / sizeof(word)> state;
         };
 
         sha256() = delete;
+
+    private:
+        static std::tuple<byte*, std::uint64_t> pad_message
+        (
+            byte const* data,
+            std::uint64_t data_length,
+            std::uint64_t message_length
+        ) noexcept;
     };
 };
 
